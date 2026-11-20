@@ -213,3 +213,5 @@ ggsave(out_file, plot = p, width = 10, height = 8, dpi = 150, bg = pal$bg)
 
 cat(sprintf("Wrote %s\n", out_file))
 cat(summary_line)
+
+# try for instance: Rscript orange_trees.R classic 12 orange_trees.png
