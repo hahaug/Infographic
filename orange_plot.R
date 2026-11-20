@@ -1,10 +1,12 @@
-# orange_plot.R
+# orange_trees.R
 #
-# Question: Which of the five orange trees in the Orange dataset grew fastest?
+# Question: After about four years, which of the five orange trees has the
+# thickest trunk, and which grew fastest?
 #
 # Data: Orange (built into R): trunk circumference (mm) of 5 orange trees,
-# measured 7 times between 118 and 1582 days of age. Only package used besides
-# base R: tidyverse.
+# measured 7 times between 118 and 1582 days of age. The infographic shows the
+# last measurement as five drawn trees, ranked from thickest to thinnest trunk.
+# Only package used besides base R: tidyverse.
 #
 # Arguments (all three are required, in this order):
 #   1. palette    One of: classic, sunset, ocean. Sets the colour scheme.
@@ -12,7 +14,7 @@
 #   3. output     Output file name; must end in .png (the folder must exist).
 #
 # Command that produced the committed image (run from the repository root):
-#   Rscript orange_plot.R ocean 12 orange_infographic.png
+#   Rscript orange_trees.R classic 12 orange_trees.png
 #
 # The analysis is deterministic (no random numbers), so every run gives the
 # same numbers. Fonts/rendering may differ slightly between machines.
@@ -22,17 +24,17 @@ suppressPackageStartupMessages(library(tidyverse))
 # ---- 1. Read and validate command-line arguments ---------------------------
 
 palettes <- list(
-  classic = list(highlight = "#f28500", muted = "#b8b8b8", bg = "#ffffff", ink = "#222222", grid = "#e6e6e6"),
-  sunset  = list(highlight = "#e8590c", muted = "#cbb8a6", bg = "#fff6ec", ink = "#2b1b17", grid = "#f0dfcc"),
-  ocean   = list(highlight = "#f08a00", muted = "#9db4bd", bg = "#f1f7f9", ink = "#14213d", grid = "#d5e3e8")
+  classic = list(fruit = "#f28500", rind = "#b85c00", leaf = "#8fbf6a", leaf_dark = "#2f6b2f", bark = "#7a4b2a", bg = "#fffaf0", ink = "#3b2f1e", grid = "#f0e6d2"),
+  sunset  = list(fruit = "#e8590c", rind = "#a63d00", leaf = "#9bb86a", leaf_dark = "#3b5d2a", bark = "#6b3e26", bg = "#fff3e0", ink = "#2b1b17", grid = "#f0dfcc"),
+  ocean   = list(fruit = "#f08a00", rind = "#b06000", leaf = "#7fb8a4", leaf_dark = "#1f5f55", bark = "#6b4a3a", bg = "#f1f7f9", ink = "#14213d", grid = "#d5e3e8")
 )
 
 usage <- paste0(
-  "Usage: Rscript orange_plot.R <palette> <base_size> <output.png>\n",
+  "Usage: Rscript orange_trees.R <palette> <base_size> <output.png>\n",
   "  palette    one of: ", paste(names(palettes), collapse = ", "), "\n",
   "  base_size  number between 8 and 24 (text size in points)\n",
   "  output     file name ending in .png\n",
-  "Example: Rscript orange_plot.R ocean 12 orange_infographic.png"
+  "Example: Rscript orange_trees.R classic 12 orange_trees.png"
 )
 
 fail <- function(msg) {
@@ -79,89 +81,113 @@ trees <- as_tibble(as.data.frame(Orange)) |>
 # Average growth rate per tree: slope of circumference against age, in mm per year
 growth <- trees |>
   group_by(Tree) |>
-  summarise(
-    rate  = unname(coef(lm(circumference ~ years))[2]),
-    final = circumference[which.max(years)],
-    .groups = "drop"
-  ) |>
-  arrange(desc(rate))
+  summarise(rate = unname(coef(lm(circumference ~ years))[2]), .groups = "drop")
 
-fastest <- growth$Tree[1]
-slowest <- growth$Tree[nrow(growth)]
-rate_fast <- growth$rate[1]
-rate_slow <- growth$rate[nrow(growth)]
+# Last measurement of each tree, ranked from thickest to thinnest trunk
+finals <- trees |>
+  group_by(Tree) |>
+  filter(years == max(years)) |>
+  ungroup() |>
+  left_join(growth, by = "Tree") |>
+  arrange(desc(circumference)) |>
+  mutate(pos = row_number(), is_top = pos == 1)
+
+n_trees    <- nrow(finals)
 span_years <- max(trees$years)
+thickest   <- finals$Tree[1]
+thinnest   <- finals$Tree[n_trees]
+fastest    <- growth$Tree[which.max(growth$rate)]
+rate_fast  <- max(growth$rate)
 
 summary_line <- paste0(
   paste(
-    sprintf("Tree %s: final circumference %d mm, average growth %.1f mm/year",
-            growth$Tree, as.integer(growth$final), growth$rate),
+    sprintf("Tree %s: circumference %d mm after %.1f years, average growth %.1f mm/year",
+            finals$Tree, as.integer(finals$circumference), span_years, finals$rate),
     collapse = "\n"
   ),
   "\n"
 )
 
-# End-of-line labels, nudged apart so they never overlap
-gap <- 0.07 * diff(range(trees$circumference))
-ends <- trees |>
-  group_by(Tree) |>
-  filter(years == max(years)) |>
-  ungroup() |>
-  left_join(growth, by = "Tree") |>
-  arrange(circumference) |>
-  mutate(
-    label = sprintf("Tree %s  (%.0f mm/yr)", Tree, rate),
-    is_fastest = Tree == fastest
-  )
-label_y <- ends$circumference
-for (i in seq_along(label_y)[-1]) {
-  if (label_y[i] - label_y[i - 1] < gap) label_y[i] <- label_y[i - 1] + gap
-}
-ends$label_y <- label_y
+# ---- 4. Draw the trees -----------------------------------------------------
 
-trees <- trees |> mutate(is_fastest = Tree == fastest)
+rx <- 0.40                              # crown half-width (x units)
+ry <- 0.12 * max(finals$circumference)  # crown half-height (y units)
+finals <- finals |> mutate(crown_y = circumference + 0.6 * ry)
 
-# ---- 4. Build the infographic ----------------------------------------------
+# Crown: an ellipse sitting on top of each trunk
+crown <- crossing(finals, theta = seq(0, 2 * pi, length.out = 80)) |>
+  mutate(x = pos + rx * cos(theta), y = crown_y + ry * sin(theta))
 
-headline <- sprintf("Tree %s won the orange growth race", fastest)
+# Oranges: fixed positions inside each crown (relative to the crown's size)
+orange_spots <- tibble(
+  ox = c(-0.50, 0.00, 0.50, -0.25, 0.30, 0.55),
+  oy = c( 0.10, 0.55, 0.00, -0.35, -0.40, 0.45)
+)
+fruit <- crossing(finals, orange_spots) |>
+  mutate(x = pos + ox * rx, y = crown_y + oy * ry)
+
+top_of_plot <- max(finals$crown_y + ry) * 1.03
+
+headline <- sprintf("Tree %s grew the thickest trunk", thickest)
 
 subtitle <- sprintf(
   paste0(
-    "Five orange trees measured over %.1f years. Tree %s added %.0f mm of trunk circumference\n",
-    "per year on average, against %.0f mm per year for the slowest, Tree %s."
+    "After %.1f years Tree %s measures %d mm around the trunk and Tree %s only %d mm.\n",
+    "Fastest average growth: Tree %s, at %.0f mm per year."
   ),
-  span_years, fastest, rate_fast, rate_slow, slowest
+  span_years, thickest, as.integer(finals$circumference[1]),
+  thinnest, as.integer(finals$circumference[n_trees]),
+  fastest, rate_fast
 )
 
 caption <- sprintf(
   paste0(
-    "Data: Orange, 5 trees, 7 measurements each. Growth rate = slope of a straight line fitted to each tree.\n",
-    "Reproduce: Rscript orange_plot.R %s %s %s"
+    "Data: Orange, 5 trees. Trunk height in the drawing = trunk circumference (not tree height); read it at the top of each trunk.\n",
+    "Trees are ranked by circumference at the last measurement. Crowns and oranges are decoration.\n",
+    "Reproduce: Rscript orange_trees.R %s %s %s"
   ),
   palette_name, format(base_size), basename(out_file)
 )
 
-p <- ggplot(trees, aes(x = years, y = circumference, group = Tree)) +
-  geom_line(data = filter(trees, !is_fastest), colour = pal$muted, linewidth = 1.1) +
-  geom_point(data = filter(trees, !is_fastest), colour = pal$muted, size = 2.4) +
-  geom_line(data = filter(trees, is_fastest), colour = pal$highlight, linewidth = 2) +
-  geom_point(data = filter(trees, is_fastest), colour = pal$highlight, size = 3.6) +
-  geom_text(
-    data = ends,
-    aes(x = years + 0.1, y = label_y, label = label, colour = is_fastest, fontface = ifelse(is_fastest, "bold", "plain")),
-    hjust = 0, size = base_size * 0.3
+p <- ggplot() +
+  # trunks
+  geom_rect(
+    data = finals,
+    aes(xmin = pos - 0.08, xmax = pos + 0.08, ymin = 0, ymax = circumference),
+    fill = pal$bark
   ) +
-  scale_colour_manual(values = c("TRUE" = pal$highlight, "FALSE" = pal$ink), guide = "none") +
+  # crowns (the thickest tree gets the darker crown)
+  geom_polygon(
+    data = crown,
+    aes(x = x, y = y, group = Tree, fill = is_top),
+    colour = pal$leaf_dark, linewidth = 0.6
+  ) +
+  # oranges
+  geom_point(
+    data = fruit, aes(x = x, y = y),
+    shape = 21, fill = pal$fruit, colour = pal$rind, size = base_size * 0.38, stroke = 0.8
+  ) +
+  # ground
+  geom_segment(
+    aes(x = 0.4, xend = n_trees + 0.6, y = 0, yend = 0),
+    colour = pal$bark, linewidth = 2
+  ) +
+  scale_fill_manual(values = c("TRUE" = pal$leaf_dark, "FALSE" = pal$leaf), guide = "none") +
   scale_x_continuous(
-    breaks = 0:4,
-    limits = c(0, span_years + 1.5),
-    expand = expansion(mult = c(0.01, 0))
+    breaks = finals$pos,
+    labels = sprintf("Tree %s\n%d mm", finals$Tree, as.integer(finals$circumference)),
+    limits = c(0.4, n_trees + 0.6),
+    expand = expansion(0)
   ) +
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05))) +
+  scale_y_continuous(
+    breaks = seq(0, 250, 50),
+    limits = c(-8, top_of_plot),
+    expand = expansion(0)
+  ) +
   labs(
     title = headline,
     subtitle = subtitle,
-    x = "Tree age (years)",
+    x = NULL,
     y = "Trunk circumference (mm)",
     caption = caption
   ) +
@@ -169,11 +195,13 @@ p <- ggplot(trees, aes(x = years, y = circumference, group = Tree)) +
   theme(
     plot.background   = element_rect(fill = pal$bg, colour = NA),
     panel.background  = element_rect(fill = pal$bg, colour = NA),
-    panel.grid.major  = element_line(colour = pal$grid),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(colour = pal$grid),
     panel.grid.minor  = element_blank(),
     text              = element_text(colour = pal$ink),
     axis.text         = element_text(colour = pal$ink),
-    plot.title        = element_text(face = "bold", size = base_size * 1.8, margin = margin(b = 6)),
+    axis.text.x       = element_text(face = "bold", size = base_size * 1.05, lineheight = 1.1),
+    plot.title        = element_text(face = "bold", size = base_size * 1.8, colour = pal$rind, margin = margin(b = 6)),
     plot.subtitle     = element_text(size = base_size * 1.0, lineheight = 1.15, margin = margin(b = 14)),
     plot.caption      = element_text(size = base_size * 0.75, hjust = 0, colour = "grey35", margin = margin(t = 12)),
     plot.margin       = margin(20, 24, 16, 24)
@@ -181,7 +209,7 @@ p <- ggplot(trees, aes(x = years, y = circumference, group = Tree)) +
 
 # ---- 5. Save ---------------------------------------------------------------
 
-ggsave(out_file, plot = p, width = 10, height = 7, dpi = 150, bg = pal$bg)
+ggsave(out_file, plot = p, width = 10, height = 8, dpi = 150, bg = pal$bg)
 
 cat(sprintf("Wrote %s\n", out_file))
 cat(summary_line)
